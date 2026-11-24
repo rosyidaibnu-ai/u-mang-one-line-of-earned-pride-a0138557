@@ -8,7 +8,9 @@ finally landing. The line is written from scratch for this bounty;
 it copies no other entry and no existing text.
 """
 
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 # One original line (164 characters): a year of practice on four bars,
@@ -21,7 +23,8 @@ ENTRY = (
     "stopped washing the dishes to listen."
 )
 
-OUTPUT_PATH = Path("/output/entry.txt")
+# Output path: overridable for local testing via MAKEFUN_OUTPUT_PATH.
+OUTPUT_PATH = Path(os.environ.get("MAKEFUN_OUTPUT_PATH", "/output/entry.txt"))
 
 MIN_LENGTH = 1
 MAX_LENGTH = 240
@@ -40,13 +43,46 @@ def validate_entry(text: str) -> str:
     return text
 
 
+def write_entry_atomically(entry: str, path: Path) -> None:
+    """Write the entry so a failure can never leave a partial file.
+
+    Writes to a temp file in the same directory, flushes it to disk,
+    then atomically replaces the destination.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=path.parent, prefix=path.name + ".", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(entry)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def main() -> int:
-    entry = validate_entry(ENTRY)
-    OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT_PATH.write_text(entry, encoding="utf-8")
-    written = OUTPUT_PATH.read_text(encoding="utf-8")
+    try:
+        entry = validate_entry(ENTRY)
+    except ValueError as exc:
+        print(f"error: invalid entry: {exc}", file=sys.stderr)
+        return 2
+    try:
+        write_entry_atomically(entry, OUTPUT_PATH)
+        written = OUTPUT_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"error: cannot write {OUTPUT_PATH}: {exc}", file=sys.stderr)
+        return 3
     if written != entry:
-        raise RuntimeError("round-trip check failed: file does not hold the entry")
+        print(
+            "error: round-trip check failed: file does not hold the entry",
+            file=sys.stderr,
+        )
+        return 4
     print(f"wrote {len(written)}-char entry to {OUTPUT_PATH}")
     return 0
 
